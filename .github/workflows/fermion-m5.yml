@@ -1,0 +1,71 @@
+name: Fermion M5 benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: avrea-macos-26-16-vcpu
+    timeout-minutes: 30
+    env:
+      HF_HOME: ${{ runner.temp }}/huggingface
+      XDG_CACHE_HOME: ${{ runner.temp }}/cache
+
+    steps:
+      - name: Record hardware and operating system
+        run: |
+          set -euo pipefail
+          {
+            sw_vers
+            uname -a
+            system_profiler SPHardwareDataType
+            sysctl -n machdep.cpu.brand_string
+            sysctl -n hw.physicalcpu
+            sysctl -n hw.logicalcpu
+            sysctl -n hw.memsize
+            sysctl -a | grep '^hw.perflevel' || true
+          } | tee hardware.txt
+
+      - name: Install pinned Fermion package
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install fermion-research==0.1.14
+          python -c 'import importlib.metadata; print("fermion-research", importlib.metadata.version("fermion-research"))'
+
+      - name: Download and inspect the released Neutrino-8B artifact
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          fermion info --model fermionresearch/Neutrino-8B | tee model-info.txt
+
+      - name: Benchmark native CPU decode
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          : > benchmark-results.txt
+          for threads in 4 8 12 16; do
+            for round in 1 2 3; do
+              echo "threads=${threads} round=${round}" | tee -a benchmark-results.txt
+              FERMION_THREADS="${threads}" fermion bench \
+                --model fermionresearch/Neutrino-8B \
+                --backend native \
+                --tokens 256 \
+                --warmup 16 2>&1 | tee -a benchmark-results.txt
+            done
+          done
+
+      - name: Upload raw benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fermion-m5-benchmark-results
+          path: |
+            hardware.txt
+            model-info.txt
+            benchmark-results.txt
